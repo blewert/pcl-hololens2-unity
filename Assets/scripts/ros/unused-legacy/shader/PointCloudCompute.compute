@@ -1,0 +1,56 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+struct Point
+{
+	//20 bytes in total:
+	//12 for x y z (4 each), that leaves 8 bytes..
+	
+	// colour starts at 16 and is 4 bytes so theres a 4 byte
+	float3 pos;    // 4 + 4 + 4 bytes
+	int unknown;   // 4 byte colour
+	int colour;    // 4 byte colour
+
+		           // = 20 bytes
+};
+
+RWStructuredBuffer<Point> points;
+RWTexture2D<float4> outTex;
+
+Point p;
+
+//[numthreads(8,8,1)]
+[numthreads(64,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+	//From 2D coordinate, figure out 1D coordinate
+	//int i = id.x + 512 * id.y;
+	//int i = id.x;
+
+	//Get the point at this index
+	p = points[id.x];
+
+	//ros does:
+	//(-y, z, x)
+	 
+	//float z = (float)p.z;
+	//outTex[id.xy] = float4(-p.xy.y, z, p.xy.x, p.colour);
+
+
+
+	int r = (p.colour >> 24) & 0xff;
+	int g = (p.colour >> 16)  & 0xff;
+	int b = (p.colour >> 0) & 0xff;
+
+	int lum = (r + g + b) / 3;
+
+	uint2 coord;
+
+	coord.x = id.x % (int)512;
+	coord.y = id.x / (int)512;
+
+	outTex[coord.xy] = half4(-p.pos.y, p.pos.z, p.pos.x, lum / 256.0);
+	//outTex[coord.xy] = float4(r / 256.0, g / 256.0, b / 256.0, 1.0);
+	/*outTex[coord.xy] = float4(id.x / 512, id.y / 512, id.x + id.y, 0.0);*/
+    //outTex[id.xy] = float4(id.x & id.y, (id.x & 15)/15.0, (id.y & 15)/15.0, 0.0);
+}

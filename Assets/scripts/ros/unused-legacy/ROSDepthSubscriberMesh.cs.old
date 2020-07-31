@@ -1,0 +1,259 @@
+﻿/**
+ * @file       ROSDepthSubscriber.cs
+ * @brief      A basic ROS bridge subscriber for PointCloud2 topic types
+ *
+ * @author     Benjamin Williams <trewelb@gmail.com>
+ * @copyright  Copyright (c) University of Lincoln 2020
+*/
+
+using System.Collections;
+
+using System.Collections.Generic;
+using UnityEngine;
+
+using RosSharp.RosBridgeClient;
+using RosSharp.RosBridgeClient.Protocols;
+
+using stdMsgs = RosSharp.RosBridgeClient.MessageTypes.Std;
+using sensorMsgs = RosSharp.RosBridgeClient.MessageTypes.Sensor;
+
+public class ROSDepthSubscriberMesh : MonoBehaviour
+{
+    /// <summary>
+    /// Connection info for ROS bridge
+    /// </summary>
+    [Header("[connection]")]
+    public ROSConnectionInfo connectionInfo;
+
+    /// <summary>
+    /// The connector
+    /// </summary>
+    public ROSBridgeConnector connector;
+
+
+    //We want to pass in:
+    //- A bunch of points from ROS
+    //- A bunch of vertices from the mesh (which are saved to)
+
+    //Compute shader stuff
+    public ComputeBuffer pointBuffer;
+    public ComputeBuffer vertexBuffer;
+    public ComputeBuffer indicesBuffer;
+    public ComputeBuffer colorBuffer;
+    public ComputeShader computeShader;
+    //--
+    public int kernelID;
+    public int indicesKernelID;
+    //--
+    public const int MAX_NUM_POINTS = 512 * 512;
+    public const int POINT_STRUCT_STRIDE = 20;
+    public const int NUM_THREADS = 64;
+
+
+    public float pointSize = 1f;
+
+    //Mesh stuff (vertices)
+    [HideInInspector]
+    public Vector3[] vertices = new Vector3[MAX_NUM_POINTS];
+
+    [HideInInspector]
+    public int[] indices = new int[MAX_NUM_POINTS];
+
+    [HideInInspector]
+    public Color[] colours = new Color[MAX_NUM_POINTS];
+
+    //Mesh
+    private Mesh mesh;
+
+    public Shader renderShader;
+
+    public void Start()
+    {
+        //Make a new connect and connect
+        connector = new ROSBridgeConnector(connectionInfo);
+        connector.Connect(this.onRosBridgeConnect);
+
+        //Get the kernel id
+        kernelID = computeShader.FindKernel("CSMain");
+        indicesKernelID = computeShader.FindKernel("ComputeIndices");
+
+        //Create the compute buffers
+        this.createComputeBuffers();
+
+        //Create mesh
+        this.mesh = new Mesh
+        {
+            indexFormat = UnityEngine.Rendering.IndexFormat.UInt32
+        };
+       
+        //Set mesh
+        GetComponent<MeshFilter>().mesh = this.mesh;
+        GetComponent<MeshRenderer>().material = new Material(this.renderShader);
+
+        //Set up indices initially
+        this.setupIndices();
+    }
+
+    private void setupIndices()
+    {
+        //Set indices buffer, run it
+        indicesBuffer.SetData(indices);
+        computeShader.SetBuffer(indicesKernelID, "indices", indicesBuffer);
+        computeShader.Dispatch(indicesKernelID, MAX_NUM_POINTS / NUM_THREADS, 1, 1);
+
+        //And get the data
+        indicesBuffer.GetData(indices);
+
+        //Set mesh indices
+        mesh.SetIndices(indices, MeshTopology.Points, 0);
+    }
+
+    private void createComputeBuffers()
+    {
+        //Make a point buffer
+        pointBuffer = new ComputeBuffer(MAX_NUM_POINTS, POINT_STRUCT_STRIDE, ComputeBufferType.Structured);
+
+        //Make a vertex buffer (which is just a vec3 buffer)
+        vertexBuffer = new ComputeBuffer(MAX_NUM_POINTS, sizeof(float) * 3);
+
+        //Make an indices buffer
+        indicesBuffer = new ComputeBuffer(MAX_NUM_POINTS, sizeof(int));
+
+        //Create colour buffer (rgba)
+        colorBuffer = new ComputeBuffer(MAX_NUM_POINTS, sizeof(float) * 4);
+    }
+
+    private void dispatchComputeShader()
+    {
+        //Set point buffer
+        pointBuffer.SetData(lastBytes);
+
+        //Set vertex buffer
+        //vertexBuffer.SetData(vertices);
+
+        //Tell the GPU to run
+        computeShader.SetBuffer(kernelID, "points", pointBuffer);
+        computeShader.SetBuffer(kernelID, "vertices", vertexBuffer);
+        computeShader.SetBuffer(kernelID, "colors", colorBuffer);
+        computeShader.Dispatch(kernelID, MAX_NUM_POINTS / NUM_THREADS, 1, 1);
+    }
+
+
+    private void updateMesh()
+    {
+        this.vertices = new Vector3[MAX_NUM_POINTS];
+        mesh.Clear();
+
+        //Set mesh vertices
+        vertexBuffer.GetData(this.vertices);
+
+        //Get mesh colours
+        colorBuffer.GetData(this.colours);
+
+        //Set mesh vertices, colours & indices
+        mesh.vertices = this.vertices;
+        mesh.colors = this.colours;
+        mesh.SetIndices(this.indices, MeshTopology.Points, 0);
+    }
+
+    private void onRosBridgeConnect()
+    {
+        //At this point, the connection is 100% established so lets subscribe to something
+        //without fear of the RosSocket being null
+        connector.SubscribeTo<sensorMsgs.PointCloud2>("/camera/depth/color/points", onPointCloudMessage);
+    }
+
+    private byte[] lastBytes;
+
+    private int dispatchSeq = 0;
+    private int oldDispatchSeq = 0;
+
+
+    private void onPointCloudMessage(sensorMsgs.PointCloud2 message)
+    {
+        /*
+         * fields:
+            x 0 32
+            y 4 32
+            z 8 64?
+            rgb 16 
+
+            20 bytes:
+            ----------
+            x is bytes   [0 to 4]
+            y is bytes   [4 to 8]
+            z is bytes   [8 to 16]
+            rgb is bytes [16 to 20]
+        */
+
+        //var fields = message.header.seq;
+
+        //Debug.Log(message.data.Length / message.point_step);
+
+
+        //Get the first element
+        //lastBytes = message.data;
+        //dispatchSeq++;
+
+        //this.PrintFrameData(ref message);
+        //this.PrintFieldData(ref message);
+    }
+
+    private void Update()
+    {
+        //For some reason unity doesnt run the compute shader stuff
+        //if its in the onPointCloudMessage callback.. so this is a work around.
+
+        if(oldDispatchSeq != dispatchSeq)
+        {
+            //Run compute shader
+            this.dispatchComputeShader();
+
+            //Set mesh
+            this.updateMesh();
+
+            //Set dispatch seq
+            oldDispatchSeq = dispatchSeq;
+        }
+
+        //Set point size
+        GetComponent<MeshRenderer>().material.SetFloat("_PointSize", pointSize);
+    }
+
+    private void PrintFieldData(ref sensorMsgs.PointCloud2 message)
+    {
+        foreach(var field in message.fields)
+        {
+            Debug.Log($"Start at byte {field.offset}, read {field.count}, name = {field.name}, datatype = {field.datatype}");
+        }
+    }
+
+    private void PrintFrameData(ref sensorMsgs.PointCloud2 message)
+    {
+        var seq = message.header.seq;
+        var timeSecs = message.header.stamp.nsecs;
+
+        var bigendian = message.is_bigendian;
+        var dense = message.is_dense;
+
+        var pt_step = message.point_step;
+        var row_step = message.row_step;
+
+        Debug.Log($"[message {seq} time {timeSecs}]: big endian [{bigendian}], dense [{dense}] => step (pt) is {pt_step}, step (row) is {row_step}");
+    }
+
+
+    public void OnApplicationQuit()
+    {
+        //Unsubscribe
+        connector.UnsubscribeFromAll();
+
+        //Close the connection on exit
+        connector.Close();
+
+        vertexBuffer.Dispose();
+        pointBuffer.Dispose();
+        indicesBuffer.Dispose();
+        colorBuffer.Dispose();
+    }
+}

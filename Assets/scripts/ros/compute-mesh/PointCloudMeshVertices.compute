@@ -1,0 +1,89 @@
+﻿/**
+ * @file      PointCloudMeshVertices.hlsl
+ * @author    Benjamin Williams <bwilliams@lincoln.ac.uk>
+ * @copyright Copyright (c) University of Lincoln 2020
+ *
+ * @brief     Takes a bunch of points from a PointCloud2 and transforms them into
+ *            mesh vertices, using a ros-to-unity coordinate transformation.
+*/
+
+//Two kernels: CSMain for outputting vertices & colours, ComputeIndices
+//for running a single pass to set up indices. 
+#pragma kernel CSMain
+#pragma kernel ComputeIndices
+
+struct Point
+{
+	//20 bytes in total:
+	//12 for x y z (4 each), a gap of 4 bytes, and 4 bytes for rgba colour
+
+	//Position starts at +0x0
+	float x;	   //+0 [4]
+	float y;	   //+4 [4]
+	float z;       //+8 [4]
+	float unused;  //+12 [4]
+	uint colour;   //+16 [4]
+				   //+20 [0]
+};
+
+//Input points to transform into mesh vertices
+RWStructuredBuffer<Point> points;
+
+//Outputs: vertices, indices (a separate kernel) and per-vertex colours
+RWStructuredBuffer<float3> vertices;
+RWStructuredBuffer<int> indices;
+RWStructuredBuffer<float4> colors;
+
+
+/**
+ * @brief Converts a ROS float3 to a Unity float3.
+*/
+float3 ros2unity(float3 input)
+{
+	//ROS suggests:
+	return float3(-input.y, input.z, input.x);
+
+	//But actually from inmo-jang's repo, this seems to
+	//work best:
+	//return float3(input.x, input.z, input.y);
+}
+
+
+/**
+ * @brief Kernel used to compute indices for MeshTopology.Points. The indices are
+ *        super easy: An index i(n) = n.
+*/
+[numthreads(64,1,1)]
+void ComputeIndices(uint3 id : SV_DispatchThreadID)
+{
+	//Easy peasy:
+	indices[id.x] = id.x;
+}
+
+
+/**
+ * @brief Kernel used to compute vertex data such as position and points, to pass to either
+ *        a CG shader or relevant script for drawing a mesh procedurally.
+*/
+[numthreads(64,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+	//An alias so we dont have to write out so much
+	int i = id.x;
+	Point v = points[i];
+
+	//Set position, just take it from this vertex
+	float3 p = float3(v.x, v.y, v.z);
+	vertices[i] = ros2unity(p);
+
+	//Set colour (extract r, g, b), PointCloud2 data is 
+	//(in this case) BGR but is not well documented. The first byte,
+	//alpha, is unused so it is ignored
+	uint a = (v.colour >> 24) & 0xff; // 0x[AA]bbggrr
+	uint b = (v.colour >> 16) & 0xff; // 0xaa[BB]ggrr
+	uint g = (v.colour >> 8) & 0xff;  // 0xaabb[GG]rr
+	uint r = (v.colour >> 0) & 0xff;  // 0xaabbgg[RR] 
+
+	//Set colour (don't include alpha here) and normalise against 0xff
+	colors[i] = float4(r, g, b, 1.0) / 255.0;
+}
