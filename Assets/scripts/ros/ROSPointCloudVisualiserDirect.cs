@@ -116,6 +116,11 @@ public class ROSPointCloudVisualiserDirect : MonoBehaviour
     /// </summary>
     private uint lastSeq = default(uint);
 
+    /// <summary>
+    /// Recording? If so, we need to shift render from onrenderobject to separate function
+    /// </summary>
+    public bool recordMode = false;
+
     #endregion
 
     #region Unity callbacks
@@ -169,6 +174,10 @@ public class ROSPointCloudVisualiserDirect : MonoBehaviour
 
     private void OnRenderObject()
     {
+        //Record mode? return 
+        if(recordMode)
+            return;
+
         //Null buffer? get out of here
         if (vertexBuffer == null)
             return;
@@ -305,7 +314,8 @@ public class ROSPointCloudVisualiserDirect : MonoBehaviour
         this.DispatchComputeShader();
 
         //We don't need to update the mesh
-        //this.UpdateMesh();
+        if(this.recordMode)
+            this.UpdateMesh();
     }
 
 #endregion
